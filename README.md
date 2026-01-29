@@ -1,4 +1,4 @@
-# Uber-Stock-Analysis-And-Prediction
+# Uber Stock Price Analysis & Financial Time-Series Modeling
 
 ## 🔍 Project Overview
 
