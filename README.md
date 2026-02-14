@@ -53,14 +53,5 @@
 
 ---
 
-## 🚀 Getting Started
-
-Clone the repository and run the notebook:
-
-```bash
-git clone https://github.com/your-username/uber-stock-analysis.git
-cd uber-stock-analysis
-pip install -r requirements.txt
-jupyter notebook MA_541_Project-8.ipynb
 ```
 
