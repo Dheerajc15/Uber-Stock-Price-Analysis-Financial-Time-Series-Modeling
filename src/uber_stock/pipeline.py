@@ -17,31 +17,27 @@ from uber_stock.plots import (
 
 
 def run_full_analysis():
-    # 1) Load + clean
     df = load_and_clean_stock_data()
-
-    # 2) Add features
     df = add_finance_features(df)
 
-    # 3) Diagnostics + metrics
     diag = run_return_diagnostics(df)
     risk = compute_risk_metrics(df)
 
-    # 4) Model
+    # Model
     model, model_metrics, pred_df = run_return_regression(df)
 
-    # 5) Save visuals
+    # visuals
     plot_price_series(df, OUTPUT_FIGURES / "price_series.png")
     plot_return_distribution(df, OUTPUT_FIGURES / "return_distribution.png")
     plot_return_qq(df, OUTPUT_FIGURES / "return_qq.png")
     plot_rolling_volatility(df, OUTPUT_FIGURES / "rolling_volatility.png")
     plot_drawdown(df, OUTPUT_FIGURES / "drawdown.png")
 
-    # 6) Save tables
+    # Save tables
     df.to_csv(OUTPUT_TABLES / "uber_finance_features.csv", index=False)
     pred_df.to_csv(OUTPUT_TABLES / "return_model_predictions.csv", index=False)
 
-    # 7) Save metrics (JSON)
+    # Save metrics (JSON)
     metrics_bundle = {
         "diagnostics": diag,
         "risk_metrics": risk,
@@ -50,7 +46,7 @@ def run_full_analysis():
     with open(OUTPUT_METRICS / "summary_metrics.json", "w") as f:
         json.dump(metrics_bundle, f, indent=2)
 
-    # 8) Save a one-row summary CSV (nice for README)
+    # Save a one-row summary CSV (nice for README)
     summary_row = {
         "run_timestamp": datetime.now().isoformat(timespec="seconds"),
         **metrics_bundle["risk_metrics"],
@@ -62,7 +58,7 @@ def run_full_analysis():
         OUTPUT_METRICS / "metrics_summary_table.csv", index=False
     )
 
-    # 9) Save model summary text
+    # Save model summary text
     model_summary_text = model.summary().as_text()
     with open(OUTPUT_METRICS / "return_model_summary.txt", "w") as f:
         f.write(model_summary_text)

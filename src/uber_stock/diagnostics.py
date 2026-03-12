@@ -10,7 +10,7 @@ def run_return_diagnostics(df: pd.DataFrame) -> dict:
 
     results = {}
 
-    # Normality (returns are often non-normal)
+    # Normality
     jb_stat, jb_p = jarque_bera(r)
     results["jarque_bera"] = {"stat": float(jb_stat), "p_value": float(jb_p)}
 
@@ -20,35 +20,55 @@ def run_return_diagnostics(df: pd.DataFrame) -> dict:
 
     # Autocorrelation in returns
     lb = acorr_ljungbox(r, lags=[10, 20], return_df=True)
-    results["ljung_box"] = lb.to_dict(orient="index")
 
-    # ARCH effects (volatility clustering)
-    arch_stat, arch_p, _, _ = het_arch(r)
+    # Convert integer index to string keys for JSON compatibility
+    results["ljung_box"] = {str(k): v for k, v in lb.to_dict(orient="index").items()}
+
+    # FIX B14: Unpack by index to be resilient to API changes
+    arch_results = het_arch(r)
+    arch_stat, arch_p = arch_results[0], arch_results[1]
     results["arch_test"] = {"stat": float(arch_stat), "p_value": float(arch_p)}
 
     return results
 
 
 def compute_risk_metrics(df: pd.DataFrame, risk_free_rate_annual: float = 0.0) -> dict:
-    r = df["simple_return"].dropna()
+    # Guard against missing required columns
+    required_cols = {"simple_return", "log_return", "drawdown"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"compute_risk_metrics requires columns: {required_cols}. "
+            f"Missing: {missing}. Did you call add_finance_features() first?"
+        )
 
-    ann_ret = (1 + r.mean()) ** 252 - 1
-    ann_vol = r.std() * np.sqrt(252)
+    r_simple = df["simple_return"].dropna()
+    r_log    = df["log_return"].dropna()
 
-    rf_daily = (1 + risk_free_rate_annual) ** (1 / 252) - 1
-    excess_daily = r - rf_daily
-    sharpe = (excess_daily.mean() / r.std()) * np.sqrt(252) if r.std() > 0 else np.nan
+    ann_ret = (1 + r_simple.mean()) ** 252 - 1
 
-    var_95 = np.quantile(r, 0.05)
-    cvar_95 = r[r <= var_95].mean()
+    # Use log-returns for annualized volatility 
+    ann_vol = r_log.std() * np.sqrt(252)
 
-    max_dd = df["drawdown"].min()
+    rf_daily    = (1 + risk_free_rate_annual) ** (1 / 252) - 1
+    excess_daily = r_simple - rf_daily
+
+    # Use excess_daily.std() in the Sharpe denominator
+    sharpe = (
+        (excess_daily.mean() / excess_daily.std()) * np.sqrt(252)
+        if excess_daily.std() > 0
+        else np.nan
+    )
+
+    var_95  = float(np.quantile(r_simple, 0.05))
+    cvar_95 = float(r_simple[r_simple <= var_95].mean())
+    max_dd  = float(df["drawdown"].min())
 
     return {
-        "annualized_return": float(ann_ret),
+        "annualized_return":    float(ann_ret),
         "annualized_volatility": float(ann_vol),
-        "sharpe_ratio": float(sharpe),
-        "VaR_95_daily": float(var_95),
-        "CVaR_95_daily": float(cvar_95),
-        "max_drawdown": float(max_dd),
+        "sharpe_ratio":         float(sharpe),
+        "VaR_95_daily":         var_95,
+        "CVaR_95_daily":        cvar_95,
+        "max_drawdown":         max_dd,
     }

@@ -18,3 +18,8 @@ outputs/metrics/*.json
 # OS
 .DS_Store
 Thumbs.db
+
+# packaging/build artifacts
+*.egg-info/
+build/
+dist/

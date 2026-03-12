@@ -1,3 +1,5 @@
+from __future__ import annotations  
+
 import pandas as pd
 
 
@@ -11,12 +13,11 @@ def load_and_clean_stock_data(csv_path: str | None = None) -> pd.DataFrame:
     # Standardize column names (strip extra spaces)
     df.columns = [c.strip() for c in df.columns]
 
-    # Parse date safely
-    df["Date"] = pd.to_datetime(df["Date"], format="%d-%m-%Y", errors="coerce")
+    df["Date"] = pd.to_datetime(df["Date"], format="mixed", dayfirst=False, errors="coerce")
     df = df.dropna(subset=["Date"]).copy()
 
-    # Drop duplicates + sort
-    df = df.drop_duplicates().sort_values("Date").reset_index(drop=True)
+    # Deduplicate on Date to ensure one row per trading day
+    df = df.drop_duplicates(subset=["Date"]).sort_values("Date").reset_index(drop=True)
 
     # Ensure numeric columns
     numeric_cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
@@ -24,7 +25,10 @@ def load_and_clean_stock_data(csv_path: str | None = None) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    if "Adj Close" in df.columns:
+        required_cols.append("Adj Close")
+    df = df.dropna(subset=required_cols)
 
     if "Adj Close" in df.columns:
         df["price"] = df["Adj Close"]

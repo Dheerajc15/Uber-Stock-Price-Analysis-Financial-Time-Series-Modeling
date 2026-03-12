@@ -1,27 +1,27 @@
                             OLS Regression Results                            
 ==============================================================================
-Dep. Variable:        target_next_ret   R-squared:                       0.013
-Model:                            OLS   Adj. R-squared:                  0.009
-Method:                 Least Squares   F-statistic:                     3.721
-Date:                Sun, 22 Feb 2026   Prob (F-statistic):            0.00513
-Time:                        19:45:34   Log-Likelihood:                 2235.2
-No. Observations:                1149   AIC:                            -4460.
-Df Residuals:                    1144   BIC:                            -4435.
+Dep. Variable:        target_next_ret   R-squared:                       0.019
+Model:                            OLS   Adj. R-squared:                  0.015
+Method:                 Least Squares   F-statistic:                     5.492
+Date:                Thu, 12 Mar 2026   Prob (F-statistic):           0.000222
+Time:                        15:52:05   Log-Likelihood:                 614.54
+No. Observations:                1149   AIC:                            -1219.
+Df Residuals:                    1144   BIC:                            -1194.
 Df Model:                           4                                         
 Covariance Type:            nonrobust                                         
 =====================================================================================
                         coef    std err          t      P>|t|      [0.025      0.975]
 -------------------------------------------------------------------------------------
-const                 0.0003      0.001      0.335      0.737      -0.002       0.002
-ret_lag1              0.0798      0.029      2.712      0.007       0.022       0.138
-ret_lag2              0.0222      0.029      0.755      0.450      -0.035       0.080
-ret_lag5             -0.0719      0.029     -2.462      0.014      -0.129      -0.015
-volume_log_change    -0.0015      0.003     -0.574      0.566      -0.007       0.004
+const                 0.0004      0.004      0.099      0.921      -0.008       0.009
+ret_lag1             -0.1182      0.030     -3.929      0.000      -0.177      -0.059
+ret_lag2             -0.0560      0.030     -1.871      0.062      -0.115       0.003
+ret_lag5             -0.0384      0.029     -1.314      0.189      -0.096       0.019
+volume_log_change    -0.0167      0.007     -2.299      0.022      -0.031      -0.002
 ==============================================================================
-Omnibus:                      269.147   Durbin-Watson:                   2.003
-Prob(Omnibus):                  0.000   Jarque-Bera (JB):             4564.172
-Skew:                           0.604   Prob(JB):                         0.00
-Kurtosis:                      12.689   Cond. No.                         29.1
+Omnibus:                      151.468   Durbin-Watson:                   2.538
+Prob(Omnibus):                  0.000   Jarque-Bera (JB):             1365.668
+Skew:                          -0.244   Prob(JB):                    2.81e-297
+Kurtosis:                       8.319   Cond. No.                         8.01
 ==============================================================================
 
 Notes:
