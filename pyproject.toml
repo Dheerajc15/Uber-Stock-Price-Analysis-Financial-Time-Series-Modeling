@@ -15,6 +15,7 @@ dependencies = [
     "scipy",
     "statsmodels",
     "scikit-learn",
+    "arch",
     "jupyter",
     "ipykernel"
 ]
