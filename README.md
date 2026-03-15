@@ -4,7 +4,6 @@
 > data engineering → feature construction → statistical diagnostics → GARCH(1,1) volatility modelling → out-of-sample forecasting.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
-![License](https://img.shields.io/badge/License-MIT-green)
 ![Status](https://img.shields.io/badge/Status-Complete-brightgreen)
 
 ---
