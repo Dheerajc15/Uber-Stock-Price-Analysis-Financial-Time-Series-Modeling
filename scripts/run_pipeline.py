@@ -20,11 +20,11 @@ from uber_stock.pipeline import run_full_analysis
 
 
 if __name__ == "__main__":
-    # run_full_analysis now returns 4 values:
+    # run_full_analysis now returns 3 values:
     #   df             — feature DataFrame (Date as index)
     #   metrics        — dict with all metric sub-dicts
     #   garch_result   — fitted GARCH arch ModelResult object
-    df, metrics, ols_summary, garch_result = run_full_analysis()
+    df, metrics, garch_result = run_full_analysis()
 
     print("\n" + "=" * 60)
     print("Pipeline completed successfully ✅")
