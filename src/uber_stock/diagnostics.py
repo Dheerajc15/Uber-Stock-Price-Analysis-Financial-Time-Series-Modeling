@@ -8,28 +8,51 @@ from statsmodels.tsa.stattools import adfuller
 def run_return_diagnostics(df: pd.DataFrame) -> dict:
     """
     Statistical tests on the log-return series.
-    Returns are passed in DECIMAL form (log_return column).
+
+    All tests operate on DECIMAL log-returns (the 'log_return' column).
+    Scale does not affect test statistics for ADF, Ljung-Box, or ARCH LM.
+    Jarque-Bera skewness and kurtosis are scale-invariant.
     """
     r = df["log_return"].dropna()
 
+    if len(r) < 30:
+        raise ValueError(
+            f"Only {len(r)} non-NaN log-return observations. "
+            "Need at least 30 for meaningful diagnostic tests."
+        )
+
     results = {}
 
-    # ── Normality ──────────────────────────────────────────────────────────
+    # ── Normality: Jarque-Bera ─────────────────────────────────────────────
+    # H0: skewness=0 and excess-kurtosis=0 (Normal distribution).
+    # Expected result for equity returns: strongly reject (p ≈ 0).
     jb_stat, jb_p = jarque_bera(r)
-    results["jarque_bera"] = {"stat": float(jb_stat), "p_value": float(jb_p)}
+    results["jarque_bera"] = {
+        "stat":     float(jb_stat),
+        "p_value":  float(jb_p),
+        "skewness": float(r.skew()),
+        "kurtosis": float(r.kurt()),   # excess kurtosis (Normal = 0)
+    }
 
-    # ── Stationarity ───────────────────────────────────────────────────────
+    # ── Stationarity: Augmented Dickey-Fuller ─────────────────────────────
+    # H0: unit root present (non-stationary).
+    # Expected result: strongly reject — log-returns are stationary.
     adf_stat, adf_p, *_ = adfuller(r)
-    results["adf"] = {"stat": float(adf_stat), "p_value": float(adf_p)}
+    results["adf"] = {
+        "stat":    float(adf_stat),
+        "p_value": float(adf_p),
+    }
 
-    # ── Autocorrelation in returns ─────────────────────────────────────────
+    # ── Autocorrelation in returns: Ljung-Box ─────────────────────────────
+    # H0: no autocorrelation up to lag k.
     lb = acorr_ljungbox(r, lags=[10, 20], return_df=True)
-    # Convert integer index to string keys for JSON compatibility
     results["ljung_box"] = {
         str(k): v for k, v in lb.to_dict(orient="index").items()
     }
 
-    # ── ARCH / volatility-clustering test ─────────────────────────────────
+    # ── Volatility clustering: ARCH LM test ───────────────────────────────
+    # H0: no ARCH effects (constant conditional variance).
+    # Expected result: strongly reject — justifies GARCH modelling.
     arch_results = het_arch(r)
     results["arch_test"] = {
         "stat":    float(arch_results[0]),
@@ -44,25 +67,30 @@ def compute_risk_metrics(
     risk_free_rate_annual: float = 0.0,
 ) -> dict:
     """
-    Compute standard risk/performance metrics from the feature DataFrame.
+    Compute standard risk/performance metrics.
 
-    Annualized return
-    -----------------
-    Uses the geometric CAGR formula:
+    CAGR
+    ----
+    Uses actual calendar time between the first and last index date:
 
-        CAGR = (P_final / P_initial) ^ (252 / N_trading_days) - 1
+        years = (last_date - first_date).days / 365.25
+        CAGR  = (P_final / P_initial) ^ (1 / years) - 1
 
-    This is correct and standard in finance. The previous formula —
-    compounding the arithmetic mean of daily returns — produces
-    misleadingly large numbers (e.g. 400%+) because it amplifies the
-    compounding effect of day-to-day variance.
+    This is more accurate than dividing len(df) by 252 because it accounts
+    for the precise number of elapsed calendar days rather than assuming
+    exactly 252 trading days per year.
 
-    Annualized volatility
+    Annualized Volatility
     ---------------------
-    Computed on DECIMAL log-returns (log_return column).
-    log_return values are in the range ±0.15 for typical trading days,
-    so std() * sqrt(252) gives a realistic annualized figure (~30–60%
-    for a high-beta stock like UBER).
+    std(log_return) × √252, where log_return is in DECIMAL form.
+    Typical range for UBER: 40–60%.
+
+    VaR / CVaR
+    ----------
+    Computed on DECIMAL simple_return (not percentage).
+    VaR 95%  = 5th percentile of the daily simple-return distribution.
+    CVaR 95% = mean of all returns at or below the VaR threshold.
+    Both are negative numbers (losses).
     """
     required_cols = {"simple_return", "log_return", "drawdown", "price"}
     missing = required_cols - set(df.columns)
@@ -75,21 +103,20 @@ def compute_risk_metrics(
     r_simple = df["simple_return"].dropna()
     r_log    = df["log_return"].dropna()
 
-    # ── Annualized return — CAGR (geometric) ──────────────────────────────
-    # Number of trading days in the full series (not just non-NaN returns)
-    n_trading_days = len(df)
-    years = n_trading_days / 252.0
-
-    # Use the price column from the full DataFrame (before dropna on returns)
+    # ── Annualized return — CAGR using actual calendar days ───────────────
     p_initial = float(df["price"].dropna().iloc[0])
     p_final   = float(df["price"].dropna().iloc[-1])
+    first_date = df.index[0]
+    last_date  = df.index[-1]
+    calendar_days = (last_date - first_date).days
+    years = calendar_days / 365.25
 
     if years > 0 and p_initial > 0:
         ann_ret = (p_final / p_initial) ** (1.0 / years) - 1.0
     else:
         ann_ret = float("nan")
 
-    # ── Annualized volatility (decimal log-returns) ────────────────────────
+    # ── Annualized volatility from DECIMAL log-returns ────────────────────
     ann_vol = float(r_log.std() * np.sqrt(252))
 
     # ── Sharpe ratio ───────────────────────────────────────────────────────
@@ -107,9 +134,9 @@ def compute_risk_metrics(
     max_dd  = float(df["drawdown"].min())
 
     return {
-        "annualized_return":     ann_ret,
-        "annualized_volatility": ann_vol,
-        "sharpe_ratio":          sharpe,
+        "annualized_return":     float(ann_ret),
+        "annualized_volatility": float(ann_vol),
+        "sharpe_ratio":          float(sharpe),
         "VaR_95_daily":          var_95,
         "CVaR_95_daily":         cvar_95,
         "max_drawdown":          max_dd,

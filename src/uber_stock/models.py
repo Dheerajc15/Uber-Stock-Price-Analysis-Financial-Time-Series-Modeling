@@ -6,9 +6,18 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from arch import arch_model
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, r2_score
 
-# ── GARCH(1,1) ─────────────────────────────────────────────────────────────
+try:
+    from sklearn.metrics import root_mean_squared_error
+except ImportError:
+    from sklearn.metrics import mean_squared_error
+
+    def root_mean_squared_error(y_true, y_pred):  
+        return float(mean_squared_error(y_true, y_pred) ** 0.5)
+
+
+# ── GARCH model ────────────────────────────────────────────────────────────
 
 def run_garch_model(
     df: pd.DataFrame,
@@ -16,119 +25,139 @@ def run_garch_model(
     forecast_horizon: int = 5,
 ) -> tuple[object, dict, pd.DataFrame, pd.DataFrame]:
     """
-    Fit a GARCH(1,1)-AR(1) model with Student-t innovations on the training
-    set, then evaluate out-of-sample using rolling 1-step-ahead forecasts on
-    the test set.
+    Fit a GARCH(1,1)-AR(1) model with Student-t innovations.
 
     Parameters
     ----------
-    df             : DataFrame that includes a `log_return_pct` column
-                     (log-returns × 100, i.e. percentage returns).
-    train_ratio    : Fraction of data used for in-sample fitting (default 0.80).
+    df               : Feature DataFrame produced by add_finance_features().
+                       Must contain the 'log_return_pct' column.
+    train_ratio      : Fraction of observations used for training (default 0.80).
     forecast_horizon : Number of future trading days to forecast (default 5).
 
     Returns
     -------
-    garch_result   : Fitted arch ModelResult object.
-    garch_metrics  : Dict of parameters and performance metrics.
-    oos_df         : DataFrame of out-of-sample 1-step-ahead forecasts
-                     (columns: predicted_vol_ann, realized_vol_proxy).
-    forecast_df    : DataFrame of h-step-ahead forecasts beyond the sample.
+    garch_result  : arch ModelResult object fitted on the training set.
+    garch_metrics : dict of parameters, fit statistics, and OOS metrics.
+    oos_df        : DataFrame with OOS predicted_vol_ann and realized_vol_proxy.
+    forecast_df   : DataFrame with annualized_vol_forecast for future dates.
     """
+    # ── Input validation ──────────────────────────────────────────────────
     if "log_return_pct" not in df.columns:
         raise ValueError(
-            "Column 'log_return_pct' not found. "
-            "Did you call add_finance_features()? "
-            "This column should be log_return × 100."
+            "'log_return_pct' column not found. "
+            "Call add_finance_features() before run_garch_model(). "
+            "This column should equal log_return × 100."
         )
 
-    # ── Drop NaN rows at the start (first row has no return) ──────────────
     returns_pct = df["log_return_pct"].dropna()
 
+    # Scale sanity check — std of pct returns must be in range 0.5–20.
+    # Values outside this range indicate a unit error (decimal vs pct).
+    ret_std = float(returns_pct.std())
+    if ret_std < 0.1:
+        raise ValueError(
+            f"'log_return_pct' has std = {ret_std:.6f}. "
+            "This looks like decimal returns (expected std ~0.5–5.0 for pct). "
+            "Ensure features.py sets log_return_pct = log_return × 100."
+        )
+    if ret_std > 20.0:
+        raise ValueError(
+            f"'log_return_pct' has std = {ret_std:.4f}. "
+            "Unusually large — check for outliers or incorrect units."
+        )
     if len(returns_pct) < 50:
         raise ValueError(
-            f"Only {len(returns_pct)} non-NaN return observations. "
-            "Need at least 50 for a reliable GARCH fit."
+            f"Only {len(returns_pct)} non-NaN return observations — need ≥ 50."
         )
 
-    # ── Train / test chronological split ──────────────────────────────────
-    split_idx  = int(len(returns_pct) * train_ratio)
-    train_ret  = returns_pct.iloc[:split_idx]
-    test_ret   = returns_pct.iloc[split_idx:]
+    # ── Chronological train / test split ──────────────────────────────────
+    split_idx = int(len(returns_pct) * train_ratio)
+    train_ret = returns_pct.iloc[:split_idx]
+    test_ret  = returns_pct.iloc[split_idx:]
 
-    print(f"GARCH split → train: {len(train_ret)} days | test: {len(test_ret)} days")
-    print(f"  Train period: {train_ret.index[0].date()} → {train_ret.index[-1].date()}")
-    print(f"  Test  period: {test_ret.index[0].date()}  → {test_ret.index[-1].date()}")
+    print(f"  GARCH split  →  train: {len(train_ret)} days  |  test: {len(test_ret)} days")
+    print(f"  Train period :  {train_ret.index[0].date()}  →  {train_ret.index[-1].date()}")
+    print(f"  Test  period :  {test_ret.index[0].date()}   →  {test_ret.index[-1].date()}")
+    print(f"  Return std (pct/day): {ret_std:.4f}  ← should be 0.5–5.0")
 
-    # ── Fit GARCH(1,1) with AR(1) mean on TRAINING set only ───────────────
-    # mean="AR"  → r_t = c + φ·r_{t-1} + ε_t  (absorbs any autocorrelation)
-    # vol="Garch" → σ²_t = ω + α·ε²_{t-1} + β·σ²_{t-1}
-    # dist="t"   → Student-t innovations (handles fat tails)
-    am = arch_model(
+    # ── Fit GARCH(1,1)-AR(1) on training set ──────────────────────────────
+    am_train = arch_model(
         train_ret,
-        mean="AR", lags=1,
-        vol="Garch", p=1, q=1,
-        dist="t",
-        rescale=False,         
+        mean="AR",    lags=1,     # AR(1) mean: captures mild return autocorrelation
+        vol="Garch",  p=1, q=1,   # GARCH(1,1): one lag each of ε² and σ²
+        dist="t",                  # Student-t: accommodates fat tails
+        rescale=False,             # Do NOT let arch rescale — we've already scaled
     )
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        garch_result = am.fit(
+        garch_result = am_train.fit(
             disp="off",
             options={"maxiter": 500},
         )
 
     # ── Extract parameters ─────────────────────────────────────────────────
-    params = garch_result.params
-    omega   = float(params.get("omega",   params.get("Const",   0.0)))
+    params  = garch_result.params
+    omega   = float(params.get("omega",    params.get("Const", 0.0)))
     alpha_1 = float(params.get("alpha[1]", 0.0))
     beta_1  = float(params.get("beta[1]",  0.0))
+    nu      = float(params.get("nu", float("nan")))
     persistence = alpha_1 + beta_1
 
-    # Unconditional variance (percentage²) → annualized vol
+    # ── Convergence warnings ───────────────────────────────────────────────
+    if persistence >= 1.0:
+        warnings.warn(
+            f"GARCH persistence α+β = {persistence:.6f} ≥ 1.0 (IGARCH). "
+            "Possible causes: (1) model fed decimal returns instead of pct "
+            "returns, (2) structural break in the data. "
+            "Check that log_return_pct = log_return × 100.",
+            UserWarning, stacklevel=2,
+        )
+
+    if not np.isnan(nu) and nu < 3.0:
+        warnings.warn(
+            f"Student-t ν = {nu:.4f} < 3 (implies infinite variance). "
+            "This usually signals a scale error in the GARCH input. "
+            "Verify log_return_pct units.",
+            UserWarning, stacklevel=2,
+        )
+
+    # ── Unit conversions: pct/day  →  decimal annualised ──────────────────
+    #
+    # arch.conditional_volatility is in pct/day (same units as the input).
+    # Step 1: divide by 100 to convert pct → decimal
+    # Step 2: multiply by √252 to annualise
+
+    cond_vol_pct      = garch_result.conditional_volatility   # Series, pct/day
+    last_cond_vol_ann = float(
+        (cond_vol_pct.iloc[-1] / 100.0) * np.sqrt(252)
+    )
+
+    # Unconditional (long-run) variance in pct²/day
     if persistence < 1.0:
-        uncond_var_pct2   = omega / (1.0 - persistence)
-        uncond_vol_daily  = np.sqrt(uncond_var_pct2) / 100.0  
-        uncond_vol_ann    = uncond_vol_daily * np.sqrt(252)
+        uncond_var_pct2  = omega / (1.0 - persistence)
+        uncond_vol_daily = float(np.sqrt(uncond_var_pct2)) / 100.0   # pct → decimal
+        uncond_vol_ann   = uncond_vol_daily * np.sqrt(252)
     else:
         uncond_vol_ann = float("nan")
 
-    # ── In-sample conditional volatility (training set) ───────────────────
-    cond_var_train_pct2 = garch_result.conditional_volatility ** 2  
-    last_cond_vol_ann   = float(
-        np.sqrt(cond_var_train_pct2.iloc[-1]) / 100.0 * np.sqrt(252)
-    )
+    # ── Out-of-sample rolling 1-step-ahead forecast ────────────────────────
+    sigma2_prev = float(cond_vol_pct.iloc[-1] ** 2)     # pct²/day
+    resid_prev  = float(garch_result.resid.iloc[-1])    # pct/day
 
-    # ── Out-of-sample: rolling 1-step-ahead forecast on test set ──────────
-    # We refit the model on an expanding window: train + first k test points,
-    # then forecast 1 step ahead for point k+1.
-    # For speed we use the "fixed" approach: freeze parameters from the full
-    # training fit and run the variance recursion forward on the test set.
-    # This is the standard "Walk-Forward without re-estimation" approach.
+    oos_predicted_vol_ann: list[float] = []
+    realized_vol_proxy:    list[float] = []
 
-    # Initialise recursion from the last training variance
-    sigma2_prev = float(cond_var_train_pct2.iloc[-1])
-    resid_prev  = float(garch_result.resid.iloc[-1])
-
-    oos_predicted_vol_ann = []
-    realized_vol_proxy    = []   # |r_t| as a proxy for daily realised vol
-
-    for ret_val in test_ret.values:
-        # 1-step-ahead forecast of variance (still in pct²)
-        sigma2_forecast = omega + alpha_1 * (resid_prev ** 2) + beta_1 * sigma2_prev
-
-        # Convert pct² → decimal → annualized
-        daily_vol_decimal = np.sqrt(sigma2_forecast) / 100.0
-        ann_vol_forecast   = daily_vol_decimal * np.sqrt(252)
-        oos_predicted_vol_ann.append(ann_vol_forecast)
-
-        # Realized vol proxy: absolute return (decimal)
-        realized_vol_proxy.append(abs(ret_val) / 100.0)
-
-        # Update recursion: residual = return - AR(1) fitted mean
-        # (approximate: use the return itself as the residual for simplicity)
-        resid_prev  = ret_val
+    for ret_val_pct in test_ret.values:
+        # One-step-ahead variance forecast (pct²/day)
+        sigma2_forecast  = omega + alpha_1 * (resid_prev ** 2) + beta_1 * sigma2_prev
+        # Convert to decimal annualised
+        vol_ann_forecast = (np.sqrt(sigma2_forecast) / 100.0) * np.sqrt(252)
+        oos_predicted_vol_ann.append(float(vol_ann_forecast))
+        # Realized proxy: |pct return| → decimal
+        realized_vol_proxy.append(abs(float(ret_val_pct)) / 100.0)
+        # Roll forward
+        resid_prev  = ret_val_pct
         sigma2_prev = sigma2_forecast
 
     oos_df = pd.DataFrame(
@@ -139,8 +168,8 @@ def run_garch_model(
         index=test_ret.index,
     )
 
-    # ── h-step-ahead forecast beyond the full sample ──────────────────────
-    # Fit on the FULL dataset to use all available information for the forecast
+    # ── h-step-ahead forecast on full dataset ─────────────────────────────
+    # Re-fit on ALL available data so the forecast uses the most recent state.
     am_full = arch_model(
         returns_pct,
         mean="AR", lags=1,
@@ -152,50 +181,51 @@ def run_garch_model(
         warnings.simplefilter("ignore")
         garch_full = am_full.fit(disp="off", options={"maxiter": 500})
 
-    forecast_obj   = garch_full.forecast(horizon=forecast_horizon, reindex=False)
-    forecast_var   = forecast_obj.variance.iloc[-1].values        
-    forecast_daily = np.sqrt(forecast_var) / 100.0               
-    forecast_ann   = forecast_daily * np.sqrt(252)              
+    # arch.forecast(horizon=h) returns variance for each of the next h steps.
+    forecast_obj = garch_full.forecast(horizon=forecast_horizon, reindex=False)
+    forecast_var_pct2 = forecast_obj.variance.iloc[-1].values  # pct²/day, shape (h,)
+    forecast_vol_ann  = (np.sqrt(forecast_var_pct2) / 100.0) * np.sqrt(252)
 
-    # Build date index for the forecast
-    last_date = returns_pct.index[-1]
+    last_date    = returns_pct.index[-1]
     future_dates = pd.bdate_range(
         start=last_date + pd.Timedelta(days=1),
         periods=forecast_horizon,
     )
     forecast_df = pd.DataFrame(
-        {"annualized_vol_forecast": forecast_ann},
+        {"annualized_vol_forecast": forecast_vol_ann.tolist()},
         index=future_dates,
     )
     forecast_df.index.name = "Date"
 
     # ── OOS evaluation metrics ─────────────────────────────────────────────
-    oos_mae = float(mean_absolute_error(
-        oos_df["realized_vol_proxy"], oos_df["predicted_vol_ann"]
-    ))
-    # Correlation between predicted and realized (directional accuracy)
+    oos_mae  = float(
+        mean_absolute_error(oos_df["realized_vol_proxy"], oos_df["predicted_vol_ann"])
+    )
     oos_corr = float(
         oos_df["predicted_vol_ann"].corr(oos_df["realized_vol_proxy"])
     )
 
-    garch_metrics = {
-        # Parameters (from training-set fit)
-        "omega":              omega,
-        "alpha_1":            alpha_1,
-        "beta_1":             beta_1,
-        "persistence":        persistence,
-        "unconditional_vol_ann":  uncond_vol_ann,
-        "last_cond_vol_ann":      last_cond_vol_ann,
-        # Model fit (AIC/BIC from training-set fit)
-        "aic":             float(garch_result.aic),
-        "bic":             float(garch_result.bic),
-        "log_likelihood":  float(garch_result.loglikelihood),
-        # Train / test split info
-        "n_train": int(len(train_ret)),
-        "n_test":  int(len(test_ret)),
-        # OOS performance
-        "oos_mae_vol":  oos_mae,
-        "oos_corr_vol": oos_corr,
+    # ── Save training-set model summary text ──────────────────────────────
+    from uber_stock.config import OUTPUT_METRICS
+    with open(OUTPUT_METRICS / "garch_model_summary.txt", "w") as fh:
+        fh.write(garch_result.summary().as_text())
+
+    # ── Bundle metrics ─────────────────────────────────────────────────────
+    garch_metrics: dict = {
+        "omega":                 omega,
+        "alpha_1":               alpha_1,
+        "beta_1":                beta_1,
+        "persistence":           persistence,
+        "nu":                    float(nu),
+        "unconditional_vol_ann": uncond_vol_ann,
+        "last_cond_vol_ann":     last_cond_vol_ann,
+        "aic":                   float(garch_result.aic),
+        "bic":                   float(garch_result.bic),
+        "log_likelihood":        float(garch_result.loglikelihood),
+        "n_train":               int(len(train_ret)),
+        "n_test":                int(len(test_ret)),
+        "oos_mae_vol":           oos_mae,
+        "oos_corr_vol":          oos_corr,
     }
 
     return garch_result, garch_metrics, oos_df, forecast_df

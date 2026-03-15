@@ -1,25 +1,11 @@
 from __future__ import annotations
 
 import warnings
+
 import pandas as pd
 
 
 def load_and_clean_stock_data(csv_path: str | None = None) -> pd.DataFrame:
-    """
-    Load, clean, and return UBER stock price data.
-
-    Key design decisions
-    --------------------
-    * Forward-fill (ffill) is used for missing prices — this mimics the
-      real-world convention where a stock's last known price carries forward
-      on non-trading days.  Backward-fill (bfill) would introduce look-ahead
-      bias by using a *future* price to fill a *past* gap.
-    * Gaps longer than MAX_GAP_DAYS are NOT filled; instead a warning is raised
-      so the user can investigate data quality.
-    * Returns are kept in USD.
-    """
-    MAX_GAP_DAYS = 5  # More than a long weekend 
-
     if csv_path is None:
         from uber_stock.config import DATA_RAW
         csv_path = DATA_RAW / "uber_stock_data.csv"
@@ -37,7 +23,8 @@ def load_and_clean_stock_data(csv_path: str | None = None) -> pd.DataFrame:
     if invalid_dates > 0:
         warnings.warn(
             f"{invalid_dates} rows had unparseable dates and were dropped.",
-            UserWarning, stacklevel=2,
+            UserWarning,
+            stacklevel=2,
         )
     df = df.dropna(subset=["Date"]).copy()
 
@@ -54,7 +41,7 @@ def load_and_clean_stock_data(csv_path: str | None = None) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # ── Drop rows where required columns are all NaN ───────────────────────
+    # ── Drop rows where any required column is NaN ─────────────────────────
     required_cols = ["Open", "High", "Low", "Close", "Volume"]
     if "Adj Close" in df.columns:
         required_cols.append("Adj Close")
@@ -66,44 +53,28 @@ def load_and_clean_stock_data(csv_path: str | None = None) -> pd.DataFrame:
     else:
         df["price"] = df["Close"]
 
-    # ── Keep only positive prices/volume ──────────────────────────────────
+    # ── Keep only positive prices and positive volume ──────────────────────
     df = df[(df["price"] > 0) & (df["Volume"] > 0)].copy()
 
-    # ── Reindex to full calendar range & forward-fill gaps ────────────────
-    # Build a complete business-day calendar between the first and last date
-    full_bday_index = pd.bdate_range(df["Date"].min(), df["Date"].max())
-    df = df.set_index("Date").reindex(full_bday_index)
-
-    # Warn about large gaps BEFORE filling
-    gap_mask = df["price"].isna()
-    if gap_mask.any():
-        # Find consecutive gap lengths
-        gap_lengths = (
-            gap_mask.astype(int)
-            .groupby((gap_mask != gap_mask.shift()).cumsum())
-            .sum()
-        )
-        max_gap = int(gap_lengths.max())
-        n_missing = int(gap_mask.sum())
-        if max_gap > MAX_GAP_DAYS:
-            warnings.warn(
-                f"Largest consecutive missing-data gap is {max_gap} business days "
-                f"({n_missing} total missing rows). "
-                "This may indicate data quality issues beyond normal holidays. "
-                "Forward-fill is applied for all gaps.",
-                UserWarning, stacklevel=2,
-            )
-
-    # Forward-fill: last known price carries forward (no look-ahead bias)
-    fill_cols = ["Open", "High", "Low", "Close", "Volume"] + (
-        ["Adj Close"] if "Adj Close" in df.columns else []
-    ) + ["price"]
-    for col in fill_cols:
-        if col in df.columns:
-            df[col] = df[col].ffill()
-
-    # Drop any rows still missing after ffill (beginning of series with no prior data)
-    df = df.dropna(subset=["price"]).copy()
+    # ── Set DatetimeIndex from actual trading days only ────────────────────
+    df = df.set_index("Date")
     df.index.name = "Date"
+
+    # ── Warn about calendar gaps longer than 5 days ────────────────────────
+    # (normal weekends = 3 days; long-weekend holidays = 4 days)
+    if len(df) > 1:
+        day_gaps = df.index.to_series().diff().dt.days.dropna()
+        large_gaps = day_gaps[day_gaps > 5]
+        if not large_gaps.empty:
+            worst_gap  = int(large_gaps.max())
+            worst_date = large_gaps.idxmax().date()
+            warnings.warn(
+                f"{len(large_gaps)} gap(s) longer than 5 calendar days detected. "
+                f"Largest: {worst_gap} days ending {worst_date}. "
+                "This may indicate missing data in the CSV. "
+                "No forward-fill is applied — only actual trading days are used.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     return df
